@@ -1,11 +1,11 @@
 import pandas as pd
 
-def data_prep():
+def data_prep(filename):
     # Load your dataset here
     # For example, using pandas to read a CSV file
     # Assuming the dataset is in a file named 'data.csv'
     # Adjust the file path and column indices as necessary
-    data = pd.read_excel('data.xlsx')
+    data = pd.read_excel(filename)
 
     data = data.sort_values(by='Year')
     
@@ -17,7 +17,7 @@ def data_prep():
     data = data.drop(columns=[col for col in data.columns if 'PC_all' in col or 'IC' in col or ('PC' in col and '_prev_year' not in col)])
 
     categorical_columns = ['Court', 'Municipality', 'Bench']
-    data = pd.get_dummies(data, columns=categorical_columns, drop_first=True)
+    data = pd.get_dummies(data, columns=categorical_columns, drop_first=False)
 
     data = data.drop(columns=['Informatic People'])
     data = data.drop(columns=['Justice Officials'])
