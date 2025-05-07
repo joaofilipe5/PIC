@@ -43,8 +43,6 @@ for court in court_vars:
 print(f"Number of court-municipality-bench combinations: {len(court_mun_bench_tuples)}")
 print('Number of records in the year:', data_year.shape[0])
 
-pc_vars = [feature for feature in coef_df.columns if 'PC' in feature]
-
 staff_vars = ['Judges',
 'Justice Secretary',
 'Law Clerck',
@@ -53,7 +51,7 @@ staff_vars = ['Judges',
 'Operational/Auxiliar People']
 
 x_vars = {(staff, court, mun, bench): m.addVar(vtype=GRB.INTEGER, name=f"{staff}, {court}, {mun}, {bench}") for staff in staff_vars
-          for court, mun, bench in court_mun_bench_tuples}\
+          for court, mun, bench in court_mun_bench_tuples}
 
 staff_max = {}
 for court in court_vars:
@@ -129,6 +127,13 @@ else:
 
 print(f"ML model prediction (default allocations): {model.predict(data_year).sum().sum()}")
 print(f"Real value: {data.loc[data['Year']==year, target_specific].sum().sum()}")
+# Save optimal variable values to a .csv file
+optimal_values = []
+for var in m.getVars():
+    optimal_values.append({'Variable': var.VarName, 'Value': var.X})
+optimal_values_df = pd.DataFrame(optimal_values)
+optimal_values_df.to_csv(f'optimal_var_values_{year}.csv', index=False)
+print("Optimal variable values saved to 'optimal_variable_values.csv'.")
 '''print("Variable values:")
 for var in m.getVars():
     if 'Judges' in var.VarName:
