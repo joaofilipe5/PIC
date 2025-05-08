@@ -1,0 +1,1 @@
+"""Python package for Optimizing Portuguese Courts Human Resources Allocation"""
