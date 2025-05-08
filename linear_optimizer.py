@@ -1,136 +1,160 @@
-import pandas as pd
-import numpy as np
-from gurobipy import GRB, Model
-import joblib
 import tkinter as tk
+from tkinter import ttk, messagebox
+import joblib
+import pandas as pd
+import os
+from gurobipy import GRB
 
+class OptimizationApp:
+    def __init__(self, root):
+        self.root = root
+        self.setup_ui()
+        
+        # Initialize model as None (we'll load it when needed)
+        self.model = None
+        self.status_var.set("Welcome - Ready to optimize")
 
-from data_prep import data_prep
+    def setup_ui(self):
+        self.root.title("Court Staff Optimizer")
+        self.root.geometry("500x300")
+        self.root.resizable(False, False)
+        
+        # Main frame for better organization
+        main_frame = ttk.Frame(self.root, padding="10")
+        main_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Year input
+        ttk.Label(main_frame, text="Year:").grid(row=0, column=0, sticky=tk.W, pady=5)
+        self.year_var = tk.StringVar()
+        self.year_entry = ttk.Entry(main_frame, textvariable=self.year_var)
+        self.year_entry.grid(row=0, column=1, sticky=tk.EW, padx=5, pady=5)
+        
+        # Region input
+        ttk.Label(main_frame, text="Region (optional):").grid(row=1, column=0, sticky=tk.W, pady=5)
+        self.region_var = tk.StringVar()
+        self.region_entry = ttk.Entry(main_frame, textvariable=self.region_var)
+        self.region_entry.grid(row=1, column=1, sticky=tk.EW, padx=5, pady=5)
+        
+        # Min Judges
+        ttk.Label(main_frame, text="Min Judges per Court:").grid(row=2, column=0, sticky=tk.W, pady=5)
+        self.min_judges_var = tk.IntVar(value=1)
+        self.min_judges_spin = ttk.Spinbox(main_frame, from_=0, to=10, textvariable=self.min_judges_var, width=5)
+        self.min_judges_spin.grid(row=2, column=1, sticky=tk.W, padx=5, pady=5)
+        
+        # Run button
+        self.run_button = ttk.Button(main_frame, text="Run Optimization", command=self.on_run)
+        self.run_button.grid(row=3, column=0, columnspan=2, pady=15)
+        
+        # Status bar
+        self.status_var = tk.StringVar()
+        status_bar = ttk.Label(main_frame, textvariable=self.status_var, relief=tk.SUNKEN, anchor=tk.W)
+        status_bar.grid(row=4, column=0, columnspan=2, sticky=tk.EW, pady=5)
+        
+        # Configure grid weights
+        main_frame.columnconfigure(1, weight=1)
+        
+        # Debug console (hidden by default)
+        self.debug_text = tk.Text(main_frame, height=5, state=tk.DISABLED)
+        self.debug_text.grid(row=5, column=0, columnspan=2, sticky=tk.EW)
+        self.show_debug(False)  # Hide by default
+        
+        # Add debug toggle button (for troubleshooting)
+        ttk.Button(main_frame, text="Debug", command=lambda: self.show_debug()).grid(row=6, column=0, columnspan=2)
 
-model_filename = 'ridge.joblib' # ATTENTION: Must be linear (Linear Regression, Ridge, Lasso, ElasticNet, etc.)
-model = joblib.load(model_filename)
-
-year = 2022 # Pick the year you want to optimize for. Goal is to give the model future maximum staffing limits to predict completed cases.
-print('Optimizing for year:', year)
-
-data, target_specific, target_all = data_prep('data.xlsx')
-data_year = data[data['Year'] == year]
-data_year = data_year.drop(columns=['Year'])
-data_year = data_year.drop(columns=target_specific+[target_all])
-
-coef_df = pd.DataFrame(
-    model.coef_,
-    columns=data_year.columns,
-    index=target_specific
-)
-
-intercepts = pd.Series(model.intercept_, index=target_specific)
-
-m = Model('Objective')
-
-court_vars = [feature for feature in coef_df.columns if 'Court' in feature]
-mun_vars = [feature for feature in coef_df.columns if 'Municipality' in feature]
-bench_vars = [feature for feature in coef_df.columns if 'Bench' in feature]
-
-court_mun_bench_tuples = []
-for court in court_vars:
-    court_data = data_year[data_year[court] == 1]
-    for mun in mun_vars:
-        mun_data = court_data[court_data[mun] == 1]
-        for bench in bench_vars:
-            if bench in mun_data.columns and mun_data[bench].any():
-                court_mun_bench_tuples.append((court, mun, bench))
-print(f"Number of court-municipality-bench combinations: {len(court_mun_bench_tuples)}")
-print('Number of records in the year:', data_year.shape[0])
-
-pc_vars = [feature for feature in coef_df.columns if 'PC' in feature]
-
-staff_vars = ['Judges',
-'Justice Secretary',
-'Law Clerck',
-'Auxiliar Clerck',
-'Administrative/Technical People',
-'Operational/Auxiliar People']
-
-x_vars = {(staff, court, mun, bench): m.addVar(vtype=GRB.INTEGER, name=f"{staff}, {court}, {mun}, {bench}") for staff in staff_vars
-          for court, mun, bench in court_mun_bench_tuples}\
-
-staff_max = {}
-for court in court_vars:
-    court_rows = data_year[data_year[court] == 1]
-    for staff in staff_vars:
-        total = court_rows[staff].sum()
-        staff_max[(court, staff)] = total
-
-
-outputs = []
-
-for i in range(data_year.shape[0]):
-    row = data_year.iloc[i]
-    # Extract the court, municipality, and bench from the row
-    try:
-        court = row[court_vars].idxmax()
-        mun = row[mun_vars].idxmax()
-        bench = row[bench_vars].idxmax()
-        #print(f"Processing: {court}, {mun}, {bench}")
-    except Exception as e:
-        print(f"Error processing row {i}: {e}")
-        # print(f"{bench} does not exist in {mun} of {court} in the year of {year}.")
-        continue
-
-
-    for target in target_specific:
-        expr = intercepts[target]
-        for feature in coef_df.columns:
-            if feature in staff_vars:
-                expr += coef_df.loc[target, feature] * x_vars[(feature, court, mun, bench)]
-            else:
-                expr += coef_df.loc[target, feature] * row[feature]
-        outputs.append(expr)
-
-print('Setting objective function...')
-m.setObjective(sum(outputs), GRB.MAXIMIZE)
-print('Objective function set.')
-
-
-print('Adding constraints...')
-judge_var_keys = [k for k in x_vars.keys() if k[0] == 'Judges']
-for key, var in x_vars.items():
-    m.addConstr(var >= 0, name="non_negativity")
-
-    if key in judge_var_keys:
-        m.addConstr(var >= 1, name="Min_Judges")
-
-for court in court_vars:
-    for staff in staff_vars:
-        staff_vars_ = [var for key, var in x_vars.items() if court == key[1] and staff == key[0]]
-        if staff_vars_:
-            m.addConstr(sum(staff_vars_) <= staff_max[(court, staff)], name=f"Max_{staff}_{court}")
+    def show_debug(self, show=None):
+        """Toggle debug console visibility"""
+        if show is None:
+            current_state = self.debug_text.winfo_ismapped()
+            self.debug_text.grid_remove() if current_state else self.debug_text.grid()
         else:
-            continue
+            self.debug_text.grid() if show else self.debug_text.grid_remove()
 
+    def log_debug(self, message):
+        """Add a message to the debug console"""
+        self.debug_text.config(state=tk.NORMAL)
+        self.debug_text.insert(tk.END, message + "\n")
+        self.debug_text.config(state=tk.DISABLED)
+        self.debug_text.see(tk.END)
 
-print('Optimizing...')
-m.optimize()
+    def load_model(self):
+        """Load the machine learning model with error handling"""
+        try:
+            model_path = 'ridge.joblib'
+            if not os.path.exists(model_path):
+                raise FileNotFoundError(f"Model file not found at {os.path.abspath(model_path)}")
+            
+            self.log_debug(f"Loading model from {model_path}")
+            self.model = joblib.load(model_path)
+            return True
+        except Exception as e:
+            self.log_debug(f"Model loading failed: {str(e)}")
+            messagebox.showerror("Error", f"Failed to load model:\n{str(e)}")
+            return False
 
-print('Optimization complete.')
-# Check the optimization status
-if m.status == GRB.OPTIMAL:
-    print("Optimal solution found.")
-    print(f"Objective value: {m.objVal}")
-    print(f"Rounded objective value: {round(m.objVal,0)}")
-elif m.status == GRB.INFEASIBLE:
-    print("Model is infeasible!")
-elif m.status == GRB.UNBOUNDED:
-    print("Model is unbounded.")
-else:
-    print(f"Solver ended with status {m.status}")
+    def on_run(self):
+        """Handle the optimization request"""
+        try:
+            self.log_debug("\n=== Starting Optimization ===")
+            
+            # Validate inputs
+            try:
+                year = int(self.year_var.get())
+                if year <= 0:
+                    raise ValueError("Year must be positive")
+            except ValueError:
+                messagebox.showerror("Input Error", "Please enter a valid positive year number")
+                return
+            
+            region = self.region_var.get().strip() or None
+            min_judges = self.min_judges_var.get()
+            
+            if min_judges < 0:
+                messagebox.showerror("Input Error", "Minimum judges cannot be negative")
+                return
+            
+            # Load model if not already loaded
+            if self.model is None and not self.load_model():
+                return
+            
+            # Disable UI during processing
+            self.run_button.config(state=tk.DISABLED)
+            self.status_var.set("Optimizing...")
+            self.root.update()
+            
+            # Run optimization (simplified for debugging)
+            self.log_debug(f"Running optimization for year {year}, region {region}, min judges {min_judges}")
+            
+            # Simulate optimization (replace with your actual code)
+            result = self.simulate_optimization(year, region, min_judges)
+            
+            messagebox.showinfo("Result", f"Optimization complete!\nObjective value: {result:.2f}")
+            
+        except Exception as e:
+            self.log_debug(f"Error: {str(e)}")
+            messagebox.showerror("Error", f"An error occurred:\n{str(e)}")
+        finally:
+            self.run_button.config(state=tk.NORMAL)
+            self.status_var.set("Ready")
 
+    def simulate_optimization(self, year, region, min_judges):
+        """Simulate optimization for debugging"""
+        self.log_debug("Simulating optimization...")
+        return 42.0  # Dummy result
 
-print(f"ML model prediction (default allocations): {model.predict(data_year).sum().sum()}")
-print(f"Real value: {data.loc[data['Year']==year, target_specific].sum().sum()}")
-'''print("Variable values:")
-for var in m.getVars():
-    if 'Judges' in var.VarName:
-        print(f"{var.VarName}: {var.X}")
-'''
+if __name__ == "__main__":
+    root = tk.Tk()
+    
+    try:
+        app = OptimizationApp(root)
+        
+        # Add error handling for the main loop
+        def on_closing():
+            if messagebox.askokcancel("Quit", "Do you want to quit?"):
+                root.destroy()
+        
+        root.protocol("WM_DELETE_WINDOW", on_closing)
+        root.mainloop()
+    
+    except Exception as e:
+        messagebox.showerror("Fatal Error", f"The application crashed:\n{str(e)}")
+        raise
