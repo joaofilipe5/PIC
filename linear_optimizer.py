@@ -13,10 +13,10 @@ model = joblib.load(model_filename)
 year = 2016 # Pick the year you want to optimize for. Goal is to give the model future maximum staffing limits to predict completed cases.
 print('Optimizing for year:', year)
 
-data, target_specific, target_all = data_prep('src/data.xlsx')
+data, target_specific = data_prep('src/data.xlsx')
 data_year = data[data['Year'] == year]
 data_year = data_year.drop(columns=['Year'])
-data_year = data_year.drop(columns=target_specific+[target_all])
+data_year = data_year.drop(columns=target_specific)
 
 coef_df = pd.DataFrame(
     model.coef_,

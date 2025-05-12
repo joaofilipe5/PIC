@@ -7,7 +7,7 @@ from gurobipy import GRB, Model, Var
 
 from src.data_prep import data_prep
 
-data, target_specific, target_all = data_prep('src/data.xlsx')
+data, target_specific = data_prep('src/data.xlsx')
 
 class OptimizationApp:
     def __init__(self, root):
@@ -232,14 +232,14 @@ class OptimizationApp:
             else:
                 raise ValueError("Invalid granularity selected")
             
-            decision_variables = self.create_decision_variables(lp_model, year_data.drop(columns=target_specific + [target_all]), granularity, selected_court, selected_municipality)
-            objective = self.objective_function(self.model, year_data.drop(columns=target_specific + [target_all]), decision_variables, granularity, selected_court, selected_municipality)
+            decision_variables = self.create_decision_variables(lp_model, year_data.drop(columns=target_specific), granularity, selected_court, selected_municipality)
+            objective = self.objective_function(self.model, year_data.drop(columns=target_specific), decision_variables, granularity, selected_court, selected_municipality)
             lp_model.setObjective(sum(objective), GRB.MAXIMIZE)
-            self.add_constraints(lp_model, year_data.drop(columns=target_specific + [target_all]), decision_variables, granularity, selected_court, selected_municipality)
+            self.add_constraints(lp_model, year_data.drop(columns=target_specific), decision_variables, granularity, selected_court, selected_municipality)
             
             # Run optimization (simplified for debugging)
             result, status, optimal_allocation = self.simulate_optimization(lp_model)
-            ml_prediction = self.ml_model_prediction(year_data.drop(columns=target_specific + [target_all]), decision_variables, granularity, selected_court, selected_municipality)
+            ml_prediction = self.ml_model_prediction(year_data.drop(columns=target_specific), decision_variables, granularity, selected_court, selected_municipality)
             real_value = self.real_value(year_data, granularity, selected_court, selected_municipality)
             
             if result is None:
