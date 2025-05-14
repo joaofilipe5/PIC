@@ -156,9 +156,13 @@ class OptimizationApp:
         if granularity == "Country":
             # Calculate maximums for each court
             for court in court_columns:
-                court_data = year_data[year_data[court] == 1]
-                for staff in staff_vars:
-                    staff_max[(court, staff)] = court_data[staff].sum()
+                if court not in ["Court_Acores", "Court_Madeira"]:
+                    court_data = year_data[year_data[court] == 1]
+                    for staff in staff_vars:
+                        staff_max[(court, staff)] = court_data[staff].sum()
+
+                        
+                
 
         elif granularity == "Court":
             if not selected_court:
@@ -407,6 +411,23 @@ class OptimizationApp:
         mun_vars = [col for col in year_data.columns if col.startswith('Municipality_')]
         staff_max = self.calculate_staff_max(year_data, granularity, selected_court, selected_municipality)
 
+        # Define island groups for Açores and Madeira
+        island_groups = {
+            'Court_Acores': {
+                'Sao_Miguel': ['Municipality_Ponta Delgada', 'Municipality_Vila Franca do Campo', 'Municipality_Ribeira Grande'],
+                'Terceira': ['Municipality_Angra do Heroismo', 'Municipality_Vila Praia da Vitoria'],
+                'Pico': ['Municipality_Sao Roque do Pico'],
+                'Faial': ['Municipality_Horta'],
+                'Flores': ['Municipality_Santa Cruz das Flores'],
+                'Graciosa': ['Municipality_Santa Cruz Graciosa (R.A.A)'],
+                'Sao_Jorge': ['Municipality_Velas (R.A.A.)']
+            },
+            'Court_Madeira': {
+                'Madeira': ['Municipality_Funchal', 'Municipality_Ponta do Sol', 'Municipality_Santa Cruz'],
+                'Porto_Santo': ['Municipality_Porto Santo']
+            }
+        }
+
         judge_var_keys = [k for k in decision_vars.keys() if k[0] == 'Judges']
 
         for key, var in decision_vars.items():
@@ -416,22 +437,91 @@ class OptimizationApp:
                     lp_model.addConstr(var >= 1, name="Min_Judges")
 
         if granularity == "Country":
+            # Add constraint for total staff across all courts
+            for staff in staff_vars:
+                total_staff_vars = [var for key, var in decision_vars.items() if staff == key[0]]
+                if total_staff_vars:
+                    # Calculate total current staff for this type
+                    total_current_staff = year_data[staff].sum()
+                    lp_model.addConstr(sum(total_staff_vars) <= total_current_staff, 
+                                     name=f"Max_Total_{staff}")
+
+            # Add special constraints for Açores and Madeira
+            for court in ['Court_Acores', 'Court_Madeira']:
+                if court in court_vars:
+                    # Get all municipalities in this court
+                    court_data = year_data[year_data[court] == 1]
+                    
+                    # For each island group
+                    for island, municipalities in island_groups[court].items():
+                        # For each staff type
+                        for staff in staff_vars:
+                            # Get all variables for this staff type in this island group
+                            staff_vars_ = [var for key, var in decision_vars.items() 
+                                         if court == key[1] and key[2] in municipalities and staff == key[0]]
+                            
+                            if staff_vars_:
+                                # Calculate total staff in this island group
+                                total_staff = sum(court_data[court_data[mun] == 1][staff].sum() 
+                                                for mun in municipalities)
+                                print(f"Total {staff} in {court} for {island}: {total_staff}")
+                                
+                                # Constrain the sum to be less than or equal to the total staff in the island group
+                                lp_model.addConstr(sum(staff_vars_) <= total_staff, 
+                                                 name=f"Max_{staff}_{court}_{island}")
+
+            # Regular constraints for other courts
             for court in court_vars:
-                for staff in staff_vars:
-                    staff_vars_ = [var for key, var in decision_vars.items() if court == key[1] and staff == key[0]]
-                    if staff_vars_:
-                        lp_model.addConstr(sum(staff_vars_) <= staff_max[(court, staff)], name=f"Max_{staff}_{court}")
-                    else:
-                        continue
+                if court not in ['Court_Acores', 'Court_Madeira']:
+                    for staff in staff_vars:
+                        staff_vars_ = [var for key, var in decision_vars.items() if court == key[1] and staff == key[0]]
+                        if staff_vars_:
+                            lp_model.addConstr(sum(staff_vars_) <= staff_max[(court, staff)], 
+                                             name=f"Max_{staff}_{court}")
+                        else:
+                            continue
         
         elif granularity == "Court":
-            for mun in mun_vars:
+            if selected_court in ['Acores', 'Madeira']:
+                court = f'Court_{selected_court}'
+                court_data = year_data[year_data[court] == 1]
+                
+                # Add constraint for total staff in the court
                 for staff in staff_vars:
-                    staff_vars_ = [var for key, var in decision_vars.items() if staff == key[0] and mun == key[1]]
-                    if staff_vars_:
-                        lp_model.addConstr(sum(staff_vars_) <= staff_max[(mun, staff)], name=f"Max_{staff}_{selected_municipality}")
-                    else:
-                        continue
+                    total_staff_vars = [var for key, var in decision_vars.items() if staff == key[0]]
+                    if total_staff_vars:
+                        # Calculate total current staff for this type in the court
+                        total_current_staff = court_data[staff].sum()
+                        lp_model.addConstr(sum(total_staff_vars) <= total_current_staff, 
+                                         name=f"Max_Total_{staff}_{court}")
+                
+                # For each island group
+                for island, municipalities in island_groups[court].items():
+                    # For each staff type
+                    for staff in staff_vars:
+                        # Get all variables for this staff type in this island group
+                        staff_vars_ = [var for key, var in decision_vars.items() 
+                                     if key[1] in municipalities and staff == key[0]]
+                        
+                        if staff_vars_:
+                            # Calculate total staff in this island group
+                            total_staff = sum(court_data[court_data[mun] == 1][staff].sum() 
+                                            for mun in municipalities)
+                            print(f"Total {staff} in {court} for {island}: {total_staff}")
+                            
+                            # Constrain the sum to be less than or equal to the total staff in the island group
+                            lp_model.addConstr(sum(staff_vars_) <= total_staff, 
+                                             name=f"Max_{staff}_{court}_{island}")
+            else:
+                # Regular constraints for other courts
+                for mun in mun_vars:
+                    for staff in staff_vars:
+                        staff_vars_ = [var for key, var in decision_vars.items() if staff == key[0] and mun == key[1]]
+                        if staff_vars_:
+                            lp_model.addConstr(sum(staff_vars_) <= staff_max[(mun, staff)], 
+                                             name=f"Max_{staff}_{mun}")
+                        else:
+                            continue
         
         elif granularity == "Municipality":
             for staff in staff_vars:
