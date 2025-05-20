@@ -1,13 +1,13 @@
 import tkinter as tk
 from tkinter import messagebox
 
-from src.optimization import OptimizationApp
+from src.app import App
 
 if __name__ == "__main__":
     root = tk.Tk()
     
     try:
-        app = OptimizationApp(root)
+        app = App(root)
         
         # Add error handling for the main loop
         def on_closing():
