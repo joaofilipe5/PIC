@@ -86,11 +86,19 @@ class App:
         self.root.geometry("1200x800")
         self.root.resizable(True, True)
         
-        # Create main container
-        main_container = ttk.Frame(self.root)
-        main_container.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
+        # Use a PanedWindow to separate main content and debug window
+        paned = tk.PanedWindow(self.root, orient=tk.VERTICAL, sashrelief=tk.RAISED)
+        paned.grid(row=0, column=0, sticky="nsew")
         self.root.grid_rowconfigure(0, weight=1)
         self.root.grid_columnconfigure(0, weight=1)
+
+        # Top frame for controls and results
+        main_container = ttk.Frame(paned)
+        paned.add(main_container, stretch='always')
+
+        # Bottom frame for debug
+        debug_container = ttk.Frame(paned)
+        paned.add(debug_container, stretch='never', minsize=120)
 
         # Create canvas and scrollbar
         canvas = tk.Canvas(main_container)
@@ -206,15 +214,20 @@ class App:
         status_bar.grid(row=2, column=0, sticky="ew", pady=5)
         main_frame.grid_rowconfigure(2, weight=0)
 
-        # Debug console (hidden by default)
-        self.debug_text = tk.Text(main_frame, height=5, state=tk.DISABLED)
-        self.debug_text.grid(row=3, column=0, sticky="ew", pady=5)
-        main_frame.grid_rowconfigure(3, weight=0)
-        self.show_debug(False)
+        # Debug console (always visible, resizable)
+        self.debug_text = tk.Text(debug_container, height=10, width=100, state=tk.DISABLED)
+        self.debug_text.grid(row=0, column=0, sticky='nsew')
+        self.show_debug(True)
+        # Add debug clear button
+        clear_btn = ttk.Button(debug_container, text="Clear Debug", command=lambda: self.debug_text.config(state=tk.NORMAL) or self.debug_text.delete('1.0', tk.END) or self.debug_text.config(state=tk.DISABLED))
+        clear_btn.grid(row=1, column=0, sticky='se', padx=5, pady=2)
         
-        # Add debug toggle button
-        ttk.Button(main_frame, text="Debug", command=lambda: self.show_debug()).grid(row=4, column=0, pady=5)
-        main_frame.grid_rowconfigure(4, weight=0)
+        # Add debug export button
+        export_btn = ttk.Button(debug_container, text="Export Debug", command=self.export_debug_log)
+        export_btn.grid(row=1, column=0, sticky='sw', padx=5, pady=2)
+        
+        debug_container.grid_rowconfigure(0, weight=1)
+        debug_container.grid_columnconfigure(0, weight=1)
 
     def show_debug(self, show=None):
         """Toggle debug console visibility"""
@@ -230,6 +243,29 @@ class App:
         self.debug_text.insert(tk.END, message + "\n")
         self.debug_text.config(state=tk.DISABLED)
         self.debug_text.see(tk.END)
+
+    def export_debug_log(self):
+        """Export the debug console content to a text file"""
+        try:
+            debug_content = self.debug_text.get('1.0', tk.END).strip()
+            if not debug_content:
+                messagebox.showinfo("Export Debug", "Debug console is empty.")
+                return
+
+            from tkinter import filedialog
+            file_path = filedialog.asksaveasfilename(
+                defaultextension=".txt",
+                filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
+                title="Save Debug Log As"
+            )
+
+            if file_path:
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    f.write(debug_content)
+                messagebox.showinfo("Export Debug", f"Debug log successfully exported to:\n{file_path}")
+
+        except Exception as e:
+            messagebox.showerror("Export Error", f"Failed to export debug log:\n{str(e)}")
 
     def on_model_change(self, event=None):
         """Handle model selection change"""
@@ -336,7 +372,8 @@ class App:
                 year = int(self.year_var.get())
                 if year <= 0:
                     raise ValueError("Year must be positive")
-            except ValueError:
+            except ValueError as e:
+                self.log_debug(f"Input validation error: {str(e)}")
                 messagebox.showerror("Input Error", "Please enter a valid positive year number")
                 return
             
@@ -345,8 +382,10 @@ class App:
             selected_municipality = self.municipality_var.get() if granularity == "Municipality" else None
             
             # Load model if not already loaded
-            if self.model is None and not self.load_model():
-                return
+            if self.model is None:
+                if not self.load_model():
+                    self.log_debug("Failed to load model")
+                    return
             
             # Disable UI during processing
             self.run_button.config(state=tk.DISABLED)
@@ -354,8 +393,15 @@ class App:
             self.root.update()
             
             # Get data for selected year
-            year_data = data[data['Year'] == year]
-            year_data = year_data.drop(columns=['Year'])
+            try:
+                year_data = data[data['Year'] == year]
+                if year_data.empty:
+                    raise ValueError(f"No data found for year {year}")
+                year_data = year_data.drop(columns=['Year'])
+            except Exception as e:
+                self.log_debug(f"Data preparation error: {str(e)}")
+                messagebox.showerror("Data Error", f"Failed to prepare data for year {year}:\n{str(e)}")
+                return
             
             self.log_debug("Disclaimer: The optimization targets the machine learning model prediction, not the real value. The real value is only used for comparison. It might not be possible to reach the real value.")
             self.log_debug(f"Running optimization for year {year}, granularity {granularity}")
@@ -364,53 +410,105 @@ class App:
             if selected_municipality:
                 self.log_debug(f"Selected municipality: {selected_municipality}")
 
-            if granularity == "Country":
-                lp_model = Model(f"Staff_Optimization_{year}")
-            elif granularity == "Court":
-                lp_model = Model(f"Staff_Optimization_{year}_{selected_court}")
-            elif granularity == "Municipality":
-                lp_model = Model(f"Staff_Optimization_{year}_{selected_court}_{selected_municipality}")
-            else:
-                raise ValueError("Invalid granularity selected")
+            try:
+                if granularity == "Country":
+                    lp_model = Model(f"Staff_Optimization_{year}")
+                elif granularity == "Court":
+                    lp_model = Model(f"Staff_Optimization_{year}_{selected_court}")
+                elif granularity == "Municipality":
+                    lp_model = Model(f"Staff_Optimization_{year}_{selected_court}_{selected_municipality}")
+                else:
+                    raise ValueError("Invalid granularity selected")
+            except Exception as e:
+                self.log_debug(f"Model creation error: {str(e)}")
+                messagebox.showerror("Model Error", f"Failed to create optimization model:\n{str(e)}")
+                return
             
             try:
+                self.log_debug("Creating decision variables...")
                 decision_variables = self.optimization.create_decision_variables(lp_model, year_data.drop(columns=target_specific), granularity, selected_court, selected_municipality)
+                self.log_debug(f"Created {len(decision_variables)} decision variables")
             except Exception as e:
-                messagebox.showerror("Error", f"Failed to create decision variables:\n{str(e)}")
-        
-            try:
-                objective = self.optimization.objective_function(self.model, year_data.drop(columns=target_specific), decision_variables, granularity, selected_court, selected_municipality)
-            except Exception as e:
-                messagebox.showerror("Error", f"Failed to create objective function:\n{str(e)}")
+                self.log_debug(f"Decision variable creation error: {str(e)}")
+                messagebox.showerror("Variable Error", f"Failed to create decision variables:\n{str(e)}")
+                return
 
             try:
+                self.log_debug("Creating objective function...")
+                objective = self.optimization.objective_function(self.model, year_data.drop(columns=target_specific), decision_variables, granularity, selected_court, selected_municipality)
+                self.log_debug(f"Created objective function with {len(objective)} terms")
+            except Exception as e:
+                self.log_debug(f"Objective function error: {str(e)}")
+                messagebox.showerror("Objective Error", f"Failed to create objective function:\n{str(e)}")
+                return
+
+            try:
+                self.log_debug("Setting objective function...")
                 lp_model.setObjective(sum(objective), GRB.MAXIMIZE)
             except Exception as e:
-                messagebox.showerror("Error", f"Failed to set objective function:\n{str(e)}")
+                self.log_debug(f"Objective setting error: {str(e)}")
+                messagebox.showerror("Objective Error", f"Failed to set objective function:\n{str(e)}")
+                return
 
             try:
+                self.log_debug("Adding constraints...")
                 self.optimization.add_constraints(lp_model, year_data.drop(columns=target_specific), decision_variables, granularity, selected_court, selected_municipality)
+                self.log_debug("Constraints added successfully")
             except Exception as e:
-                messagebox.showerror("Error", f"Failed to add constraints:\n{str(e)}")
+                self.log_debug(f"Constraint error: {str(e)}")
+                messagebox.showerror("Constraint Error", f"Failed to add constraints:\n{str(e)}")
+                return
                         
             # Run optimization
+            self.log_debug("Starting optimization...")
             result, status, optimal_allocation = self.simulate_optimization(lp_model)
-            # Debug: print all decision variable values
-            debug_vars = []
-            for k, v in decision_variables.items():
-                val = v.x if hasattr(v, 'x') else v
-                debug_vars.append(f"{k}: {val}")
-            self.log_debug("Decision variable values after optimization:\n" + "\n".join(debug_vars))
-            ml_prediction = self.ml_model_prediction(year_data.drop(columns=target_specific), decision_variables, granularity, selected_court, selected_municipality)
-            real_value = self.real_value(year_data, granularity, selected_court, selected_municipality)
             
             if result is None:
-                messagebox.showerror("Optimization failed", f"Model status: {status}")
-                raise ValueError("Optimization failed")
+                error_msg = "Optimization failed"
+                if status == GRB.INFEASIBLE:
+                    error_msg = "Model is infeasible - no solution exists that satisfies all constraints"
+                elif status == GRB.UNBOUNDED:
+                    error_msg = "Model is unbounded - objective can grow infinitely"
+                elif status == GRB.INF_OR_UNBD:
+                    error_msg = "Model is either infeasible or unbounded"
+                elif status == GRB.CUTOFF:
+                    error_msg = "Model objective is worse than specified cutoff"
+                elif status == GRB.ITERATION_LIMIT:
+                    error_msg = "Optimization stopped due to iteration limit"
+                elif status == GRB.NODE_LIMIT:
+                    error_msg = "Optimization stopped due to node limit"
+                elif status == GRB.TIME_LIMIT:
+                    error_msg = "Optimization stopped due to time limit"
+                elif status == GRB.SOLUTION_LIMIT:
+                    error_msg = "Optimization stopped due to solution limit"
+                elif status == GRB.INTERRUPTED:
+                    error_msg = "Optimization was interrupted"
+                elif status == GRB.NUMERIC:
+                    error_msg = "Optimization stopped due to numerical issues"
+                elif status == GRB.SUBOPTIMAL:
+                    error_msg = "Optimization stopped with a suboptimal solution"
+                elif status == GRB.INPROGRESS:
+                    error_msg = "Optimization is still in progress"
+                elif status == GRB.USER_OBJ_LIMIT:
+                    error_msg = "Optimization stopped due to user objective limit"
+                
+                self.log_debug(f"Optimization failed with status {status}: {error_msg}")
+                messagebox.showerror("Optimization Failed", error_msg)
+                return
             else:   
+                # Debug: print all decision variable values only on success
+                debug_vars = []
+                for k, v in decision_variables.items():
+                    val = v.x if hasattr(v, 'x') else None
+                    debug_vars.append(f"{k}: {val}")
+                self.log_debug("Decision variable values after optimization:\n" + "\n".join(debug_vars))
+                
                 messagebox.showinfo("Result", f"Optimization complete!\nObjective value: {result:.2f}")
                 self.log_debug('Optimization complete!')
                 self.log_debug(f"Optimized objective value: {result}")
+                ml_prediction = self.ml_model_prediction(year_data.drop(columns=target_specific), decision_variables, granularity, selected_court, selected_municipality)
+                real_value = self.real_value(year_data, granularity, selected_court, selected_municipality)
+                
                 self.log_debug(f"ML model prediction (with default allocations): {ml_prediction}")
                 self.log_debug(f"Real value: {real_value}")
                 
@@ -418,8 +516,8 @@ class App:
                 self.display_allocations(decision_variables, year_data, granularity, selected_court, selected_municipality)
             
         except Exception as e:
-            self.log_debug(f"Error: {str(e)}")
-            messagebox.showerror("Error", f"An error occurred:\n{str(e)}")
+            self.log_debug(f"Unexpected error: {str(e)}")
+            messagebox.showerror("Error", f"An unexpected error occurred:\n{str(e)}")
         finally:
             self.run_button.config(state=tk.NORMAL)
             self.status_var.set("Ready")
@@ -449,14 +547,23 @@ class App:
             self.log_debug("\nGurobi Output:")
             self.log_debug(gurobi_output)
 
-            if lp_model.status == GRB.OPTIMAL:
+            status = lp_model.status
+
+            if status == GRB.OPTIMAL:
                 return lp_model.objVal, lp_model.status, lp_model.getVars()
-            elif lp_model.status == GRB.INFEASIBLE:
-                self.log_debug("Model is infeasible!")
-                return None, lp_model.status, None
-            elif lp_model.status == GRB.UNBOUNDED:
+            elif status == GRB.INFEASIBLE:
+                self.log_debug("Model is infeasible. Computing IIS...")
+                lp_model.computeIIS()
+                self.log_debug("\nIIS Constraints:")
+                for c in lp_model.getConstrs():
+                    if c.IISConstr: self.log_debug(f"{c.ConstrName}")
+                self.log_debug("\nIIS Variables:")
+                for v in lp_model.getVars():
+                    if v.IISLB or v.IISUB: self.log_debug(f"{v.VarName}")
+                return None, status, None
+            elif status == GRB.UNBOUNDED:
                 self.log_debug("Model is unbounded!")
-                return None, lp_model.status, None
+                return None, status, None
             else:
                 self.log_debug(f"Model status: {lp_model.status}")
                 return None, lp_model.status, None
