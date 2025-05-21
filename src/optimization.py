@@ -199,11 +199,6 @@ class Optimization:
         for var in decision_vars.values():
             lp_model.addConstr(var >= 0, name="non_negativity")
 
-        # Add minimum judge constraints
-        judge_var_keys = [k for k in decision_vars.keys() if k[0] == 'Judges']
-        for key in judge_var_keys:
-            lp_model.addConstr(decision_vars[key] >= 1, name="Min_Judges")
-
         if granularity == "Country":
             # For each staff type, sum across all courts/municipalities/benches
             for staff in staff_vars:
@@ -240,7 +235,7 @@ class Optimization:
                                                   if key[0] == staff and key[1] == court and key[2] == mun]
                                 current_staff = mun_data[staff].sum()
                                 if self.debug_callback:
-                                    self.debug_callback(f"[DEBUG] Country (Single Mun Island): {staff} in {court} {island} ({mun}) - Vars: {len(staff_vars_mun)}, Max: {current_staff}")
+                                    self.debug_callback(f"[DEBUG] Country (Single Mun Island): {staff} in {court} {island} ({mun}) - Vars: {len(staff_vars_mun)}, Max: {current_staff}, Var Keys: {[k for k in decision_vars.keys() if k[0] == staff and k[1] == court and k[2] == mun]}")
                                 if staff_vars_mun:
                                     lp_model.addConstr(sum(staff_vars_mun) <= current_staff, name=f"Max_{staff}_{court}_{island}_{mun}_single")
                         else:
@@ -249,32 +244,126 @@ class Optimization:
                             for staff in staff_vars:
                                 island_staff[staff] = sum(court_data[court_data[mun] == 1][staff].sum() for mun in municipalities)
                                 if self.debug_callback:
-                                    self.debug_callback(f"[DEBUG] Country (Multi Mun Island): {staff} in {court} {island} - Current Total: {island_staff[staff]}")
+                                    self.log_debug(f"[DEBUG] Country (Multi Mun Island): {staff} in {court} {island} - Current Total: {island_staff[staff]}, Municipalities: {municipalities}")
                             for staff in staff_vars:
                                 # Filter variables for this staff type, court, and all municipalities in this island group
                                 staff_vars_ = [var for key, var in decision_vars.items() 
                                                if key[0] == staff and key[1] == court and key[2] in municipalities]
                                 if self.debug_callback:
-                                    self.debug_callback(f"[DEBUG] Country (Multi Mun Island): {staff} in {court} {island} - Vars: {len(staff_vars_)}, Max: {island_staff[staff]}")
+                                    var_keys = [k for k in decision_vars.keys() if len(k) == 4 and k[0] == staff and k[1] == court and k[2] in municipalities]
+                                    self.debug_callback(f"[DEBUG] Country (Multi Mun Island): {staff} in {court} {island} - Vars: {len(staff_vars_)}, Max: {island_staff[staff]}, Var Keys: {var_keys}")
                                 if staff_vars_:
                                     lp_model.addConstr(sum(staff_vars_) <= island_staff[staff], name=f"Max_{staff}_{court}_{island}")
 
-            # Municipality-level constraints for regular courts (not Açores or Madeira)
+            # Constraints for regular courts (not Açores or Madeira) - Allow staff movement within the court
             for court in court_vars:
                 if court not in ['Court_Acores', 'Court_Madeira']:
                     court_data = year_data[year_data[court] == 1]
-                    for mun in mun_vars:
-                        if court_data[mun].any():  # Only add constraint if municipality exists in this court
-                            mun_data = court_data[court_data[mun] == 1]
-                            for staff in staff_vars:
-                                # Filter variables for this staff type, court, and municipality
-                                staff_vars_ = [var for key, var in decision_vars.items() 
-                                               if key[0] == staff and key[1] == court and key[2] == mun]
-                                current_staff = mun_data[staff].sum()
+                    for staff in staff_vars:
+                        # Filter variables for this staff type and court (across all municipalities/benches within this court)
+                        staff_vars_ = [var for key, var in decision_vars.items() 
+                                       if key[0] == staff and key[1] == court]
+                        current_staff = court_data[staff].sum() # Sum staff across all municipalities in this court
+                        if self.debug_callback:
+                             var_keys = [k for k in decision_vars.keys() if k[0] == staff and k[1] == court]
+                             self.debug_callback(f"[DEBUG] Country (Regular Court): {staff} in {court} - Vars: {len(staff_vars_)}, Max: {current_staff}, Var Keys: {var_keys}")
+                        if staff_vars_:
+                            lp_model.addConstr(sum(staff_vars_) <= current_staff, name=f"Max_{staff}_{court}")
+
+            # Minimum allocation constraint for Judges: Ensure municipalities with judge variables get appropriate judge allocation
+            self.log_debug("[DEBUG] Adding refined minimum judge allocation constraints")
+            for staff in staff_vars:
+                if staff == 'Judges':
+                    judge_vars_by_mun = {}
+                    judge_vars = [(key, var) for key, var in decision_vars.items() if key[0] == 'Judges']
+                    for key, var in judge_vars:
+                        court = key[1]
+                        mun = key[2]
+                        if (court, mun) not in judge_vars_by_mun:
+                            judge_vars_by_mun[(court, mun)] = []
+                        judge_vars_by_mun[(court, mun)].append(var)
+
+                    # Add constraint for each municipality with judge variables
+                    for (court, mun), vars_list in judge_vars_by_mun.items():
+                        if vars_list:
+                            # Get the data for the specific municipality to check current judges
+                            mun_data = year_data[(year_data[court] == 1) & (year_data[mun] == 1)]
+                            current_judges_in_mun = mun_data['Judges'].sum()
+                            num_judge_vars_in_mun = len(vars_list)
+
+                            if num_judge_vars_in_mun > 1:
+                                if current_judges_in_mun > 0:
+                                    # If municipality has multiple benches and current judges, encourage distribution
+                                    min_allocation = min(current_judges_in_mun + 1, num_judge_vars_in_mun)
+                                    lp_model.addConstr(sum(vars_list) >= min_allocation, name=f"Min_Judges_Distr_{court}_{mun}")
+                                    if self.debug_callback:
+                                        self.log_debug(f"[DEBUG]   Min Judges Distribution in {court} {mun}: Sum of {num_judge_vars_in_mun} vars >= {min_allocation} (Current judges: {current_judges_in_mun})")
+                                else:
+                                    # If municipality has multiple benches but no current judges, ensure at least 1
+                                    lp_model.addConstr(sum(vars_list) >= 1, name=f"Min_Judges_in_Municipality_{court}_{mun}")
+                                    if self.debug_callback:
+                                        self.log_debug(f"[DEBUG]   Min Judges in Municipality {court} {mun}: Sum of {num_judge_vars_in_mun} vars >= 1 (Current judges: {current_judges_in_mun})")
+                            elif num_judge_vars_in_mun > 0:
+                                # If municipality has only one bench with judge variables, ensure at least 1
+                                lp_model.addConstr(sum(vars_list) >= 1, name=f"Min_Judges_in_Municipality_{court}_{mun}")
                                 if self.debug_callback:
-                                    self.debug_callback(f"[DEBUG] Country (Regular Court Mun): {staff} in {court} {mun} - Vars: {len(staff_vars_)}, Max: {current_staff}")
-                                if staff_vars_:
-                                    lp_model.addConstr(sum(staff_vars_) <= current_staff, name=f"Max_{staff}_{court}_{mun}")
+                                    self.log_debug(f"[DEBUG]   Min Judges in Municipality {court} {mun}: Sum of {num_judge_vars_in_mun} vars >= 1 (Current judges: {current_judges_in_mun})")
+
+            # Constraint: Keep staff inside similar benches in multi-bench municipalities
+            self.log_debug("[DEBUG] Adding constraint: Keep staff inside similar benches")
+            judicial_staff = ['Judges', 'Justice Secretary', 'Law Clerck']
+            admin_staff = ['Auxiliar Clerck', 'Administrative/Technical People', 'Operational/Auxiliar People']
+            bench_categories = {
+                'Civil': ['Central Civil', 'Local Civil'],
+                'Criminal': ['Central Criminal', 'Local Criminal'],
+                'Labor': ['Labor'],
+                'Family': ['Family and Minors'],
+                'Trade': ['Trade']
+            }
+
+            for court in court_vars:
+                court_data = year_data[year_data[court] == 1]
+                mun_vars_in_court = [col for col in court_data.columns if col.startswith('Municipality_')]
+
+                for mun in mun_vars_in_court:
+                    mun_data = court_data[court_data[mun] == 1]
+                    bench_vars_in_mun = [col for col in mun_data.columns if col.startswith('Bench_') and mun_data[col].any()]
+
+                    # Identify municipalities with multiple benches excluding 'Generic'
+                    specialized_benches_in_mun = [b for b in bench_vars_in_mun if b != 'Bench_Generic']
+
+                    if len(specialized_benches_in_mun) > 0:
+                         # Constraint for staff allocated to Generic bench: cannot exceed total current staff in the municipality
+                         generic_bench_vars = [var for key, var in decision_vars.items() 
+                                              if key[0] in staff_vars and key[1] == court and key[2] == mun and key[3] == 'Bench_Generic']
+                         if generic_bench_vars:
+                             total_current_staff_in_mun = mun_data[staff_vars].sum().sum()
+                             lp_model.addConstr(sum(generic_bench_vars) <= total_current_staff_in_mun, name=f"Max_Generic_Bench_{court}_{mun}")
+                             if self.debug_callback:
+                                self.log_debug(f"[DEBUG] Max Generic Bench {court} {mun}: Sum of {len(generic_bench_vars)} vars <= {total_current_staff_in_mun}")
+                                generic_var_keys = [k for k in decision_vars.keys() if k[0] in staff_vars and k[1] == court and k[2] == mun and k[3] == 'Bench_Generic']
+                                self.log_debug(f"[DEBUG]   Generic Bench Var Keys: {generic_var_keys}")
+                                
+                         # Constraints for staff allocated to specialized benches
+                         for staff in staff_vars:
+                              allocated_specialized_vars = []
+                              current_specialized_staff_total = 0
+                              for category, benches in bench_categories.items():
+                                   for bench_name in benches:
+                                        full_bench_name = f'Bench_{bench_name}'
+                                        if full_bench_name in specialized_benches_in_mun:
+                                             # Sum allocated staff for this type in this specific specialized bench
+                                             allocated_specialized_vars.extend([var for key, var in decision_vars.items()
+                                                                                 if key[0] == staff and key[1] == court and key[2] == mun and key[3] == full_bench_name])
+                                             # Sum current staff for this type in this specific specialized bench
+                                             current_specialized_staff_total += mun_data[staff][mun_data[full_bench_name] == 1].sum() # Should be only one row per mun/bench
+                              
+                              if allocated_specialized_vars:
+                                  lp_model.addConstr(sum(allocated_specialized_vars) <= current_specialized_staff_total, name=f"Max_Specialized_Benches_{staff}_{court}_{mun}")
+                                  if self.debug_callback:
+                                       self.log_debug(f"[DEBUG] Max Specialized Benches {staff} in {court} {mun}: Sum of {len(allocated_specialized_vars)} vars <= {current_specialized_staff_total}")
+                                       specialized_var_keys = [k for k in decision_vars.keys() if k[0] == staff and k[1] == court and k[2] == mun and k[3] in specialized_benches_in_mun]
+                                       self.log_debug(f"[DEBUG]   Specialized Bench Var Keys: {specialized_var_keys}")
 
         elif granularity == "Court":
             if not selected_court:
@@ -288,7 +377,8 @@ class Optimization:
                 total_current_staff = court_data[staff].sum()
                 if self.debug_callback:
                     self.debug_callback(f"[DEBUG] Court: {staff} total vars: {len(total_staff_vars)}, max: {total_current_staff}")
-                lp_model.addConstr(sum(total_staff_vars) <= total_current_staff, name=f"Max_Total_{staff}_{court_col}")
+                if total_staff_vars:
+                    lp_model.addConstr(sum(total_staff_vars) <= total_current_staff, name=f"Max_Total_{staff}_{court_col}")
 
             if selected_court in ['Acores', 'Madeira']:
                 # Island group constraints for Açores and Madeira
@@ -300,10 +390,10 @@ class Optimization:
                         for staff in staff_vars:
                             # Filter variables for this staff type and the single municipality in this island
                             staff_vars_mun = [var for key, var in decision_vars.items() 
-                                              if len(key) == 3 and key[0] == staff and key[1] == mun]
+                                              if key[0] == staff and key[1] == mun]
                             current_staff = mun_data[staff].sum()
                             if self.debug_callback:
-                                self.log_debug(f"[DEBUG] Court (Single Mun Island): {staff} in {court_col} {island} ({mun}) - Vars: {len(staff_vars_mun)}, Max: {current_staff}, Var Keys: {[k for k in decision_vars.keys() if len(key) == 3 and k[0] == staff and key[1] == mun]}")
+                                self.log_debug(f"[DEBUG] Court (Single Mun Island): {staff} in {court_col} {island} ({mun}) - Vars: {len(staff_vars_mun)}, Max: {current_staff}, Var Keys: {[k for k in decision_vars.keys() if k[0] == staff and k[1] == mun]}")
                             if staff_vars_mun:
                                 lp_model.addConstr(sum(staff_vars_mun) <= current_staff, name=f"Max_{staff}_{court_col}_{island}_{mun}_single")
                     else:
@@ -316,11 +406,25 @@ class Optimization:
                         for staff in staff_vars:
                             # Filter variables for this staff type and all municipalities in this island group
                             staff_vars_ = [var for key, var in decision_vars.items() 
-                                           if len(key) == 3 and key[0] == staff and key[1] in municipalities]
+                                           if key[0] == staff and key[1] in municipalities]
                             if self.debug_callback:
-                                self.log_debug(f"[DEBUG] Court (Multi Mun Island): {staff} in {court_col} {island} - Vars: {len(staff_vars_)}, Max: {island_staff[staff]}, Var Keys: {[k for k in decision_vars.keys() if len(key) == 3 and k[0] == staff and key[1] in municipalities]}")
+                                var_keys = [k for k in decision_vars.keys() if len(k) == 3 and k[0] == staff and k[1] in municipalities]
+                                self.log_debug(f"[DEBUG] Court (Multi Mun Island): {staff} in {court_col} {island} - Vars: {len(staff_vars_)}, Max: {island_staff[staff]}, Var Keys: {var_keys}")
                             if staff_vars_:
                                 lp_model.addConstr(sum(staff_vars_) <= island_staff[staff], name=f"Max_{staff}_{court_col}_{island}")
+
+                # Minimum allocation constraint for Court granularity: If staff exist in the court, each variable for that staff type within the court must be >= 1
+                self.log_debug(f"[DEBUG] Adding constraint: Minimum allocation if staff exist in {selected_court}")
+                for staff in staff_vars:
+                    total_current_staff_in_court = court_data[staff].sum()
+                    if total_current_staff_in_court > 0:
+                         staff_vars_court = [var for key, var in decision_vars.items() if len(key) == 3 and key[0] == staff]
+                         if staff_vars_court:
+                              # Ensure the sum of variables for this staff type is at least 1 if staff exist in the court
+                              lp_model.addConstr(sum(staff_vars_court) >= 1, name=f"Min_Total_Allocation_{staff}_{selected_court}")
+                              if self.debug_callback:
+                                   self.log_debug(f"[DEBUG] Court Min Allocation {staff} in {selected_court}: Sum of {len(staff_vars_court)} vars >= 1 (Current total: {total_current_staff_in_court})")
+
             else:
                 # Municipality-level constraints for regular courts
                 for mun in mun_vars:
@@ -329,11 +433,12 @@ class Optimization:
                         for staff in staff_vars:
                             # Filter variables for this staff type and municipality
                             staff_vars_ = [var for key, var in decision_vars.items() 
-                                           if len(key) == 3 and key[0] == staff and key[1] == mun]
+                                           if key[0] == staff and key[1] == mun]
                             current_staff = mun_data[staff].sum()
                             if self.debug_callback:
-                                self.log_debug(f"[DEBUG] Court: {staff} in {mun} vars: {len(staff_vars_)}, max: {current_staff}, Var Keys: {[k for k in decision_vars.keys() if len(key) == 3 and k[0] == staff and key[1] == mun]}")
-                            if staff_vars_:  # Only add constraint if we have variables
+                                var_keys = [k for k in decision_vars.keys() if len(k) == 3 and k[0] == staff and k[1] == mun]
+                                self.log_debug(f"[DEBUG] Court: {staff} in {mun} vars: {len(staff_vars_)}, max: {current_staff}, Var Keys: {var_keys}")
+                            if staff_vars_:
                                 lp_model.addConstr(sum(staff_vars_) <= current_staff, name=f"Max_{staff}_{mun}")
 
         elif granularity == "Municipality":
@@ -346,8 +451,20 @@ class Optimization:
                 staff_vars_ = [var for key, var in decision_vars.items() if len(key) == 2 and key[0] == staff]
                 current_staff = mun_data[staff].sum()
                 if self.debug_callback:
-                    self.log_debug(f"[DEBUG] Municipality: {staff} vars: {len(staff_vars_)}, max: {current_staff}, Var Keys: {[k for k in decision_vars.keys() if len(key) == 2 and key[0] == staff]}")
+                    self.log_debug(f"[DEBUG] Municipality: {staff} vars: {len(staff_vars_)}, max: {current_staff}, Var Keys: {[k for k in decision_vars.keys() if len(k) == 2 and k[0] == staff]}")
                 lp_model.addConstr(sum(staff_vars_) <= current_staff, name=f"Max_{staff}")
+
+                # Minimum allocation constraint for Municipality granularity: If staff exist in the municipality, each variable for that staff type within the municipality must be >= 1
+                self.log_debug(f"[DEBUG] Adding constraint: Minimum allocation if staff exist in {selected_municipality}")
+                for staff in staff_vars:
+                    total_current_staff_in_mun = mun_data[staff].sum()
+                    if total_current_staff_in_mun > 0:
+                        staff_vars_mun = [var for key, var in decision_vars.items() if len(key) == 2 and key[0] == staff]
+                        if staff_vars_mun:
+                            # Ensure the sum of variables for this staff type is at least 1 if staff exist in the municipality
+                            lp_model.addConstr(sum(staff_vars_mun) >= 1, name=f"Min_Total_Allocation_{staff}_{selected_municipality}")
+                            if self.debug_callback:
+                                self.log_debug(f"[DEBUG] Municipality Min Allocation {staff} in {selected_municipality}: Sum of {len(staff_vars_mun)} vars >= 1 (Current total: {total_current_staff_in_mun})")
 
     def calculate_staff_max(self, year_data, granularity, selected_court=None, selected_municipality=None):
         """Calculate maximum staffing possibilities based on granularity level"""
