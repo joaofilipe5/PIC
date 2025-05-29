@@ -506,7 +506,7 @@ class App:
                 messagebox.showinfo("Result", f"Optimization complete!\nObjective value: {result:.2f}")
                 self.log_debug('Optimization complete!')
                 self.log_debug(f"Optimized objective value: {result}")
-                ml_prediction = self.ml_model_prediction(year_data.drop(columns=target_specific), decision_variables, granularity, selected_court, selected_municipality)
+                ml_prediction = self.ml_model_prediction(year_data.drop(columns=target_specific), granularity, selected_court, selected_municipality)
                 real_value = self.real_value(year_data, granularity, selected_court, selected_municipality)
                 
                 self.log_debug(f"ML model prediction (with default allocations): {ml_prediction}")
@@ -571,12 +571,8 @@ class App:
             # Ensure stdout is restored even if an error occurs
             sys.stdout = old_stdout
 
-    def ml_model_prediction(self, year_data, decision_vars, granularity, selected_court=None, selected_municipality=None):
+    def ml_model_prediction(self, year_data, granularity, selected_court=None, selected_municipality=None):
         """Predict the target variable using the machine learning model with the default allocations"""
-
-        staff_vars = self.optimization.staff_vars
-        court_vars = [col for col in year_data.columns if col.startswith('Court_')]
-        mun_vars = [col for col in year_data.columns if col.startswith('Municipality_')]
 
         if granularity == "Country":
             ml_prediction = self.model.predict(year_data).sum().sum()
